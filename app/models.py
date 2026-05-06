@@ -36,10 +36,27 @@ class AskResponse(BaseModel):
 
     response: str = Field(description="The LLM's plain-text response.")
     model_used: str = Field(
-        default="llama3-8b-8192",
+        default="llama-3.1-8b-instant",
         description="The model that generated this response.",
     )
 
+class ReviewRequest(BaseModel):
+    """Request body for the POST /review endpoint."""
+
+    pr_url: str = Field(
+        ...,
+        description="Full GitHub pull request URL.",
+        examples=["https://github.com/psf/requests/pull/6710"],
+    )
+
+class ReviewResponse(BaseModel):
+    """Response body for the POST /review endpoint."""
+
+    pr_url: str = Field(description="The PR URL that was reviewed.")
+    metadata: dict = Field(description="PR metadata: title, author, state, branches.")
+    review: str = Field(description="LLM-generated plain-text code review.")
+    files_analyzed: int = Field(description="Number of Python files analyzed.")
+    total_added_lines: int = Field(description="Total added lines across all analyzed files.")
 
 class HealthResponse(BaseModel):
     """Response body for the GET /health endpoint."""
