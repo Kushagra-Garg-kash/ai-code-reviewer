@@ -6,8 +6,6 @@ All route definitions live here.
 All business logic lives in app/ modules — this file only handles HTTP concerns:
 routing, request parsing, error mapping to HTTP status codes.
 
-Run locally with:
-    uvicorn main:app --reload
 """
 
 from fastapi import FastAPI, HTTPException
@@ -24,11 +22,10 @@ app = FastAPI(
     title="AI Code Reviewer",
     description=(
         "Automated GitHub PR review using static analysis + LLM reasoning. "
-        "Built as a placement portfolio project."
     ),
     version="0.1.0",
-    docs_url="/docs",      # Swagger UI — open this in browser to test manually
-    redoc_url="/redoc",    # Alternative API docs UI
+    docs_url="/docs",     
+    redoc_url="/redoc",    
 )
 
 # ---------------------------------------------------------------------------
@@ -76,18 +73,19 @@ def ask_endpoint(request: AskRequest) -> AskResponse:
         # 500 = our system couldn't produce a valid response.
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/review", response_model=ReviewResponse, tags=["Review"])
 def review_pr(request: ReviewRequest) -> ReviewResponse:
     """
-    Accepts a GitHub PR URL and returns an LLM-generated code review.
+    Accepts a GitHub PR URL and returns a structured AI code review.
 
-    Day 5 prototype behaviour:
-    - Fetches only Python files from the PR diff.
-    - Passes all added lines to the LLM as a single prompt (no chunking yet).
-    - Returns the raw LLM response as a plain string.
-
-    Week 2 will replace this with static analysis pre-filtering,
-    structured JSON output, and token chunking for large PRs.
+    Pipeline:
+    1. Fetch PR diff from GitHub (Python files only).
+    2. Run static analysis (bandit + pylint) on added lines.
+    3. If zero issues found — return immediately, no LLM call.
+    4. For each file with issues — send flagged lines + context to LLM.
+    5. Collect structured JSON issues across all files.
+    6. Return unified ReviewResponse.
     """
     # Step 1 — Fetch diff from GitHub
     try:
@@ -104,44 +102,60 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
             detail="No Python files found in this PR. Only Python is supported in v0.1."
         )
 
-    # Step 3 — Collect all added lines across all Python files
-    all_added_lines = []
-    for file in pr_data["files"]:
-        if file["added_lines"]:
-            all_added_lines.append(f"\n### File: {file['filename']}")
-            for line_no, content in file["added_lines"]:
-                all_added_lines.append(f"Line {line_no}: {content}")
+    # Step 3 — Run static analysis on all files
+    from app.static_analyzer import analyze_files
+    from app.llm_client import review_code_with_llm
 
-    diff_text = "\n".join(all_added_lines)
+    static_results = analyze_files(pr_data["files"])
 
-    # Step 4 — Basic review prompt (replaced with structured prompt in Week 2)
-    system_prompt = (
-        "You are an expert Python code reviewer. "
-        "You will be given lines of code added in a GitHub pull request. "
-        "Your job is to identify bugs, security issues, and code quality problems. "
-        "Be specific — reference line numbers. Be concise and direct."
-    )
+    # Count total static issues across all files
+    total_static_issues = sum(len(issues) for issues in static_results.values())
 
-    user_prompt = (
-        f"Review the following code changes from a GitHub pull request.\n\n"
-        f"{diff_text}\n\n"
-        f"Identify any bugs, security vulnerabilities, or code quality issues. "
-        f"For each issue, state the line number, what the problem is, and how to fix it."
-    )
-
-    # Step 5 — Call the LLM
-    try:
-        review_text = ask_llm(prompt=user_prompt, system_prompt=system_prompt)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-    # Step 6 — Return structured response
+    # Step 4 — If no issues found, return early — zero LLM cost
     total_added = sum(len(f["added_lines"]) for f in pr_data["files"])
+
+    if total_static_issues == 0:
+        return ReviewResponse(
+            pr_url=request.pr_url,
+            metadata=pr_data["metadata"],
+            issues=[],
+            files_analyzed=len(pr_data["files"]),
+            total_added_lines=total_added,
+            static_issues_found=0,
+            llm_called=False,
+        )
+
+    # Step 5 — Call LLM only for files that have static issues
+    all_issues = []
+
+    for file in pr_data["files"]:
+        filename = file["filename"]
+        static_issues = static_results.get(filename, [])
+
+        if not static_issues:
+            continue
+
+        try:
+            llm_issues = review_code_with_llm(
+                filename=filename,
+                static_issues=static_issues,
+                patch=file["patch"],
+            )
+            all_issues.extend(llm_issues)
+
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+    # Step 6 — Sort by severity (critical first) and return
+    severity_order = {"critical": 0, "warning": 1, "suggestion": 2}
+    all_issues.sort(key=lambda x: severity_order.get(x.get("severity", "suggestion"), 2))
 
     return ReviewResponse(
         pr_url=request.pr_url,
         metadata=pr_data["metadata"],
-        review=review_text,
+        issues=all_issues,
         files_analyzed=len(pr_data["files"]),
         total_added_lines=total_added,
+        static_issues_found=total_static_issues,
+        llm_called=True,
     )
