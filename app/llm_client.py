@@ -10,10 +10,15 @@ requires changes only in this file.
 import os
 import json
 import re
+import logging
 from groq import Groq
 from dotenv import load_dotenv
+from pydantic import ValidationError
+from app.models import ReviewIssue
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # --- Client initialization ---
 # Initialized once at module level, not inside each function call.
@@ -214,6 +219,24 @@ def _extract_json(raw: str) -> list[dict]:
 
     raise ValueError(f"Could not extract valid JSON array from LLM response: {raw[:200]}")
 
+def _validate_issues(raw_issues: list[dict]) -> list[dict]:
+    validated: list[dict] = []
+
+    for i, issue in enumerate(raw_issues):
+        try:
+            validated_issue = ReviewIssue(**issue)
+            validated.append(validated_issue.model_dump())
+        except ValidationError as e:
+            logger.warning(
+                "LLM issue at index %d failed validation and was dropped. "
+                "Object: %s. Error: %s", i, issue, e.errors()
+            )
+
+    if not validated:
+        logger.warning("All %d LLM-returned issues failed validation.", len(raw_issues))
+
+    return validated
+
 def review_code_with_llm(
     filename: str,
     static_issues: list[dict],
@@ -248,8 +271,19 @@ def review_code_with_llm(
     for attempt in range(1, max_retries + 1):
         try:
             raw = ask_llm(prompt=prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT)
-            issues = _extract_json(raw)
-            return issues
+            raw_issues = _extract_json(raw)
+            validated = _validate_issues(raw_issues)
+
+            if validated:
+                return validated
+            
+            prompt += (
+                f"\n\nAttempt {attempt}: JSON was valid but all objects failed "
+                f"schema validation. Ensure every object has: line_number (integer), "
+                f"severity (one of 'critical'/'warning'/'suggestion'), "
+                f"issue_title (string), explanation (string), fix_suggestion (string)."
+                )
+            last_error = ValueError(f"All {len(raw_issues)} issue(s) failed Pydantic validation.")
 
         except ValueError as e:
             # JSON parsing failed — feed the error back on next attempt
