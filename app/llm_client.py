@@ -237,14 +237,47 @@ def _validate_issues(raw_issues: list[dict]) -> list[dict]:
 
     return validated
 
+def _chunk_issues(
+    issues: list[dict],
+    chunk_size: int = 10,
+) -> list[list[dict]]:
+    """
+    Splits a list of static analysis issues into smaller chunks.
+
+    Why chunk by issues (not by raw lines)?
+    _build_review_prompt() takes static_issues as its primary input and
+    derives context lines from them. Splitting at the issues level keeps
+    each chunk self-contained — no need to rewrite the prompt builder.
+
+    Args:
+        issues:     Full list of static analysis issues for one file.
+        chunk_size: Max issues per chunk. Default 10 is conservative for
+                    llama-3.1-8b-instant's smaller context window.
+
+    Returns:
+        List of issue sublists. Single chunk if len(issues) <= chunk_size.
+    """
+    if len(issues) <= chunk_size:
+        return [issues]
+
+    return [
+        issues[i : i + chunk_size]
+        for i in range(0, len(issues), chunk_size)
+    ]
+
 def review_code_with_llm(
     filename: str,
     static_issues: list[dict],
     patch: str,
     max_retries: int = 3,
+    chunk_size: int = 10,
 ) -> list[dict]:
     """
     Sends flagged code snippets to the LLM and returns structured review issues.
+
+    Handles large PRs via chunking: if static_issues exceeds chunk_size,
+    the list is split and each chunk is processed independently. Results
+    are merged and deduplicated by line_number before returning.
 
     This is the only function main.py calls for code review.
     ask_llm() is used by the /ask diagnostic endpoint only.
@@ -253,51 +286,84 @@ def review_code_with_llm(
         filename:      The file being reviewed.
         static_issues: Issues from static_analyzer.analyze_files() for this file.
         patch:         Raw unified diff string for this file from GitHub.
-        max_retries:   Number of attempts if JSON parsing fails.
+        max_retries:   Number of attempts if JSON parsing fails per chunk.
+        chunk_size:    Max issues to send to the LLM in a single call.
+                       Default 10 is conservative for llama-3.1-8b-instant.
 
     Returns:
-        List of issue dicts matching the ReviewIssue schema in models.py.
+        List of validated issue dicts matching the ReviewIssue schema.
         Returns empty list if no issues found or LLM repeatedly fails.
 
     Raises:
-        RuntimeError: If all retry attempts fail due to API errors.
+        RuntimeError: If all retry attempts fail on any chunk due to API errors.
     """
     if not static_issues:
         return []
 
-    prompt = _build_review_prompt(filename, static_issues, patch)
-    last_error: Exception | None = None
+    chunks = _chunk_issues(static_issues, chunk_size)
+    all_results: list[dict] = []
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw = ask_llm(prompt=prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT)
-            raw_issues = _extract_json(raw)
-            validated = _validate_issues(raw_issues)
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        if len(chunks) > 1:
+            logger.info(
+                "Processing chunk %d/%d for %s (%d issues)",
+                chunk_index, len(chunks), filename, len(chunk),
+            )
 
-            if validated:
-                return validated
-            
-            prompt += (
-                f"\n\nAttempt {attempt}: JSON was valid but all objects failed "
-                f"schema validation. Ensure every object has: line_number (integer), "
-                f"severity (one of 'critical'/'warning'/'suggestion'), "
-                f"issue_title (string), explanation (string), fix_suggestion (string)."
-                )
-            last_error = ValueError(f"All {len(raw_issues)} issue(s) failed Pydantic validation.")
+        prompt = _build_review_prompt(filename, chunk, patch)
+        last_error: Exception | None = None
 
-        except ValueError as e:
-            # JSON parsing failed — feed the error back on next attempt
-            last_error = e
-            if attempt < max_retries:
+        for attempt in range(1, max_retries + 1):
+            try:
+                raw = ask_llm(prompt=prompt, system_prompt=CODE_REVIEW_SYSTEM_PROMPT)
+                raw_issues = _extract_json(raw)
+                validated = _validate_issues(raw_issues)
+
+                if validated:
+                    all_results.extend(validated)
+                    break  # chunk succeeded — move to next chunk
+
+                # JSON valid but all objects failed schema — retry with feedback
                 prompt += (
-                    f"\n\nYour previous response could not be parsed as JSON. "
-                    f"Error: {e}. Please return only a valid JSON array."
+                    f"\n\nAttempt {attempt}: JSON was valid but all objects "
+                    f"failed schema validation. Ensure every object has: "
+                    f"line_number (integer), severity (one of 'critical'/"
+                    f"'warning'/'suggestion'), issue_title (string), "
+                    f"explanation (string), fix_suggestion (string)."
+                )
+                last_error = ValueError(
+                    f"All {len(raw_issues)} issue(s) failed Pydantic validation."
                 )
 
-        except RuntimeError:
-            raise
+            except ValueError as e:
+                last_error = e
+                if attempt < max_retries:
+                    prompt += (
+                        f"\n\nYour previous response could not be parsed as JSON. "
+                        f"Error: {e}. Please return only a valid JSON array."
+                    )
 
-    raise RuntimeError(
-        f"LLM failed to return valid JSON after {max_retries} attempts. "
-        f"Last error: {last_error}"
-    )
+            except RuntimeError:
+                raise  # API-level failure — no point retrying here
+
+        else:
+            # All retries exhausted for this chunk — log and continue
+            # We do NOT raise here: partial results are better than nothing.
+            logger.error(
+                "Chunk %d/%d for %s failed after %d attempts. "
+                "Last error: %s. Skipping chunk.",
+                chunk_index, len(chunks), filename, max_retries, last_error,
+            )
+
+    # Deduplicate across chunks by line_number — two chunks may flag the same
+    # line if the context windows overlap at chunk boundaries.
+    seen_lines: set[int] = set()
+    deduplicated: list[dict] = []
+
+    for issue in all_results:
+        line = issue.get("line_number")
+        if line not in seen_lines:
+            seen_lines.add(line)
+            deduplicated.append(issue)
+
+    return deduplicated
