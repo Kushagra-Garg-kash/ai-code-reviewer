@@ -9,10 +9,11 @@ routing, request parsing, error mapping to HTTP status codes.
 """
 
 from fastapi import FastAPI, HTTPException
-from app.llm_client import ask_llm
+from app.llm_client import ask_llm, review_code_with_llm
 from app.models import AskRequest, AskResponse, HealthResponse, ReviewRequest, ReviewResponse
 import requests as http_requests
 from app.github_client import get_python_diffs_from_pr
+from app.static_analyzer import analyze_files
 
 # ---------------------------------------------------------------------------
 # App initialization
@@ -103,8 +104,6 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
         )
 
     # Step 3 — Run static analysis on all files
-    from app.static_analyzer import analyze_files
-    from app.llm_client import review_code_with_llm
 
     static_results = analyze_files(pr_data["files"])
 
