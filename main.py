@@ -8,16 +8,26 @@ routing, request parsing, error mapping to HTTP status codes.
 
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
+from contextlib import asynccontextmanager
+from app.database import init_db, save_review, get_recent_reviews
 from app.llm_client import ask_llm, review_code_with_llm
-from app.models import AskRequest, AskResponse, HealthResponse, ReviewRequest, ReviewResponse
+from app.models import AskRequest, AskResponse, HealthResponse, ReviewRequest, ReviewResponse, ReviewHistoryItem
 import requests as http_requests
 from app.github_client import get_python_diffs_from_pr
 from app.static_analyzer import analyze_files
+from app.auth import verify_api_key
+from app.rate_limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 # ---------------------------------------------------------------------------
 # App initialization
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
 app = FastAPI(
     title="AI Code Reviewer",
@@ -26,8 +36,12 @@ app = FastAPI(
     ),
     version="0.1.0",
     docs_url="/docs",     
-    redoc_url="/redoc",    
+    redoc_url="/redoc", 
+    lifespan=lifespan,   
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -44,7 +58,7 @@ def health_check() -> HealthResponse:
 
 
 @app.post("/ask", response_model=AskResponse, tags=["LLM"])
-def ask_endpoint(request: AskRequest) -> AskResponse:
+def ask_endpoint(request: AskRequest, _: None = Depends(verify_api_key)) -> AskResponse:
     """
     Send a prompt to the LLM and return its response.
 
@@ -76,7 +90,8 @@ def ask_endpoint(request: AskRequest) -> AskResponse:
 
 
 @app.post("/review", response_model=ReviewResponse, tags=["Review"])
-def review_pr(request: ReviewRequest) -> ReviewResponse:
+@limiter.limit("10/minute")
+def review_pr(request: Request, review_request: ReviewRequest, _: None = Depends(verify_api_key)) -> ReviewResponse:
     """
     Accepts a GitHub PR URL and returns a structured AI code review.
 
@@ -90,7 +105,7 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
     """
     # Step 1 — Fetch diff from GitHub
     try:
-        pr_data = get_python_diffs_from_pr(request.pr_url)
+        pr_data = get_python_diffs_from_pr(review_request.pr_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except http_requests.HTTPError as e:
@@ -114,8 +129,14 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
     total_added = sum(len(f["added_lines"]) for f in pr_data["files"])
 
     if total_static_issues == 0:
+        save_review(
+            pr_url=review_request.pr_url,
+            issue_count=0,
+            critical_count=0,
+            warning_count=0,
+        )
         return ReviewResponse(
-            pr_url=request.pr_url,
+            pr_url=review_request.pr_url,
             metadata=pr_data["metadata"],
             issues=[],
             files_analyzed=len(pr_data["files"]),
@@ -149,8 +170,18 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
     severity_order = {"critical": 0, "warning": 1, "suggestion": 2}
     all_issues.sort(key=lambda x: severity_order.get(x.get("severity", "suggestion"), 2))
 
+    critical_count = sum(1 for i in all_issues if i.get("severity") == "critical")
+    warning_count = sum(1 for i in all_issues if i.get("severity") == "warning")
+
+    save_review(
+        pr_url=review_request.pr_url,
+        issue_count=len(all_issues),
+        critical_count=critical_count,
+        warning_count=warning_count,
+    )
+
     return ReviewResponse(
-        pr_url=request.pr_url,
+        pr_url=review_request.pr_url,
         metadata=pr_data["metadata"],
         issues=all_issues,
         files_analyzed=len(pr_data["files"]),
@@ -158,3 +189,14 @@ def review_pr(request: ReviewRequest) -> ReviewResponse:
         static_issues_found=total_static_issues,
         llm_called=True,
     )
+
+@app.get("/reviews", response_model=list[ReviewHistoryItem], tags=["Review"])
+def list_reviews(limit: int = 10) -> list[dict]:
+    """
+    Return the most recent review history entries, newest first.
+
+    Used by the Streamlit sidebar to display recent activity without
+    touching the database directly — frontend stays a pure presentation
+    layer, all storage access goes through this API.
+    """
+    return get_recent_reviews(limit=limit)

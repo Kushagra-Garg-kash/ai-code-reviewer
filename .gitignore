@@ -28,3 +28,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Extra files/ Test files
+bandit_output.json
+pylint_output.json
+reviews.db

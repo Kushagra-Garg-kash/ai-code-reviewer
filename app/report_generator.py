@@ -1,0 +1,202 @@
+"""
+app/report_generator.py
+
+Converts structured review results (from POST /review) into a formatted
+markdown string suitable for pasting directly into a GitHub PR comment
+or downloading as a .md file.
+
+This module has zero external dependencies — pure Python string formatting.
+It is intentionally kept separate from the API layer so it can be reused
+by any future interface (CLI, webhook, email, etc.).
+"""
+
+from datetime import datetime
+
+
+# ---------------------------------------------------------------------------
+# Severity formatting helpers
+# ---------------------------------------------------------------------------
+
+SEVERITY_ICONS: dict[str, str] = {
+    "critical":   "🔴",
+    "warning":    "🟡",
+    "suggestion": "🔵",
+}
+
+
+def _severity_header(severity: str) -> str:
+    """Returns a formatted severity label for use in markdown headers."""
+    icon = SEVERITY_ICONS.get(severity, "⚪")
+    return f"{icon} [{severity.upper()}]"
+
+
+# ---------------------------------------------------------------------------
+# Section builders — each builds one section of the report
+# ---------------------------------------------------------------------------
+
+def _build_header(metadata: dict, pr_url: str) -> str:
+    """
+    Builds the report header with PR metadata.
+
+    Args:
+        metadata: PR metadata dict from get_python_diffs_from_pr().
+        pr_url:   The original PR URL submitted by the user.
+
+    Returns:
+        Formatted markdown header string.
+    """
+    title = metadata.get("title", "Untitled PR")
+    repo = metadata.get("repo", "unknown/repo")
+    author = metadata.get("author", "unknown")
+    state = metadata.get("state", "unknown").capitalize()
+    date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+    return (
+        f"# 🔍 AI Code Review Report\n\n"
+        f"| Field | Value |\n"
+        f"|-------|-------|\n"
+        f"| **PR** | [{title}]({pr_url}) |\n"
+        f"| **Repo** | `{repo}` |\n"
+        f"| **Author** | `{author}` |\n"
+        f"| **State** | {state} |\n"
+        f"| **Reviewed at** | {date} |\n"
+    )
+
+
+def _build_summary(
+    issues: list[dict],
+    files_analyzed: int,
+    total_added_lines: int,
+    static_issues_found: int,
+    llm_called: bool,
+) -> str:
+    """
+    Builds the summary table showing issue counts by severity.
+
+    Args:
+        issues:              Full list of validated issues from the review.
+        files_analyzed:      Number of Python files analyzed.
+        total_added_lines:   Total added lines across all files.
+        static_issues_found: Issues found by static analysis before LLM call.
+        llm_called:          Whether the LLM was invoked.
+
+    Returns:
+        Formatted markdown summary section.
+    """
+    counts: dict[str, int] = {"critical": 0, "warning": 0, "suggestion": 0}
+    for issue in issues:
+        sev = issue.get("severity", "suggestion")
+        if sev in counts:
+            counts[sev] += 1
+
+    llm_status = "Yes" if llm_called else "No (zero static issues found)"
+
+    return (
+        f"\n---\n\n"
+        f"## 📊 Summary\n\n"
+        f"| Metric | Count |\n"
+        f"|--------|-------|\n"
+        f"| Files Analyzed | {files_analyzed} |\n"
+        f"| Total Added Lines | {total_added_lines} |\n"
+        f"| Static Issues Found | {static_issues_found} |\n"
+        f"| 🔴 Critical | {counts['critical']} |\n"
+        f"| 🟡 Warning | {counts['warning']} |\n"
+        f"| 🔵 Suggestion | {counts['suggestion']} |\n"
+        f"| **Total Issues** | **{len(issues)}** |\n"
+        f"| LLM Called | {llm_status} |\n"
+    )
+
+
+def _build_issues_section(issues: list[dict]) -> str:
+    """
+    Builds the detailed issues section — one entry per issue.
+
+    Issues are expected to already be sorted by severity (critical first)
+    by the time they reach this function — main.py handles sorting.
+
+    Args:
+        issues: List of validated issue dicts from the review pipeline.
+
+    Returns:
+        Formatted markdown issues section, or a clean no-issues message.
+    """
+    if not issues:
+        return (
+            "\n---\n\n"
+            "## ✅ Issues\n\n"
+            "No issues found. Static analysis returned zero findings — "
+            "LLM was not called.\n"
+        )
+
+    lines = ["\n---\n\n## 🐛 Issues\n"]
+
+    for issue in issues:
+        severity = issue.get("severity", "suggestion")
+        title = issue.get("issue_title", "Untitled Issue")
+        line_number = issue.get("line_number", "?")
+        explanation = issue.get("explanation", "—")
+        fix = issue.get("fix_suggestion", "—")
+
+        header = _severity_header(severity)
+
+        lines.append(
+            f"\n### {header} Line {line_number} — {title}\n\n"
+            f"**📖 Explanation**\n\n"
+            f"{explanation}\n\n"
+            f"**🔧 Fix Suggestion**\n\n"
+            f"```\n{fix}\n```\n\n"
+            f"---"
+        )
+
+    return "\n".join(lines)
+
+
+def _build_footer() -> str:
+    """Builds the report footer."""
+    return (
+        "\n\n*Generated by [AI Code Reviewer](https://github.com) — "
+        "hybrid static analysis + LLM pipeline.*\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public interface — this is what streamlit_app.py calls
+# ---------------------------------------------------------------------------
+
+def generate_markdown_report(review_data: dict) -> str:
+    """
+    Converts a full review response dict into a formatted markdown string.
+
+    This is the only function imported by other modules.
+
+    Args:
+        review_data: The full response dict from POST /review. Expected keys:
+                     pr_url, metadata, issues, files_analyzed,
+                     total_added_lines, static_issues_found, llm_called.
+
+    Returns:
+        A complete markdown string ready to download or paste into GitHub.
+
+    Example:
+        data = requests.post("/review", json={...}).json()
+        markdown = generate_markdown_report(data)
+        # paste markdown into a GitHub PR comment
+    """
+    header = _build_header(
+        metadata=review_data.get("metadata", {}),
+        pr_url=review_data.get("pr_url", ""),
+    )
+
+    summary = _build_summary(
+        issues=review_data.get("issues", []),
+        files_analyzed=review_data.get("files_analyzed", 0),
+        total_added_lines=review_data.get("total_added_lines", 0),
+        static_issues_found=review_data.get("static_issues_found", 0),
+        llm_called=review_data.get("llm_called", False),
+    )
+
+    issues_section = _build_issues_section(review_data.get("issues", []))
+
+    footer = _build_footer()
+
+    return header + summary + issues_section + footer

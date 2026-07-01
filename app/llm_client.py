@@ -28,8 +28,9 @@ _client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Model selection.
 # llama3-8b-8192  → fast, free, good for simple tasks
+# openai/gpt-oss-20b currently using because groq decommisioned the previous
 # llama3-70b-8192 → slower, free tier, much better reasoning (use this for code review later)
-MODEL = "llama-3.1-8b-instant"
+MODEL = "openai/gpt-oss-20b"
 
 
 def ask_llm(prompt: str, system_prompt: str = "You are a helpful assistant.") -> str:

@@ -37,7 +37,7 @@ class AskResponse(BaseModel):
 
     response: str = Field(description="The LLM's plain-text response.")
     model_used: str = Field(
-        default="llama-3.1-8b-instant",
+        default="openai/gpt-oss-20b",
         description="The model that generated this response.",
     )
 
@@ -91,7 +91,17 @@ class ReviewResponse(BaseModel):
     llm_called: bool = Field(
         description="Whether the LLM was invoked. False means zero static issues were found."
     )
-    
+
+class ReviewHistoryItem(BaseModel):
+    """A single past review entry, as stored in the database."""
+
+    id: int = Field(description="Auto-incremented primary key.")
+    pr_url: str = Field(description="The PR URL that was reviewed.")
+    timestamp: str = Field(description="UTC ISO 8601 timestamp of when the review was saved.")
+    issue_count: int = Field(description="Total number of issues found.")
+    critical_count: int = Field(description="Number of critical-severity issues.")
+    warning_count: int = Field(description="Number of warning-severity issues.")
+
 class HealthResponse(BaseModel):
     """Response body for the GET /health endpoint."""
 
