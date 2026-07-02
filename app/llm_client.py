@@ -6,7 +6,7 @@ Abstracted behind a simple ask_llm() function so the rest of the codebase
 is completely decoupled from the provider. Switching from Groq to OpenAI
 requires changes only in this file.
 """
-
+import time
 import os
 import json
 import re
@@ -63,8 +63,8 @@ def ask_llm(prompt: str, system_prompt: str = "You are a helpful assistant.") ->
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": prompt},
             ],
-            max_tokens=1024,
-            temperature=0.2,  # Low temperature = deterministic output.
+            max_tokens=2048,
+            temperature=0,  # Low temperature = deterministic output.
                                # Critical for code review — we want consistent
                                # results, not creative variation.
         )
@@ -117,6 +117,8 @@ Severity guide:
 - warning: bad practice that will likely cause bugs or maintenance problems
 - suggestion: improvement that would make the code cleaner or more robust
 
+Use the severity label provided by static analysis exactly as given — do not reclassify it.
+
 If you find no issues in the snippet, return an empty array: []
 """.strip()
 
@@ -162,7 +164,7 @@ def _build_review_prompt(
 
     # Summarize what static analysis found
     static_summary = "\n".join(
-        f"- Line {issue['line']} [{issue['source']}:{issue['rule_id']}]: {issue['message']}"
+        f"- Line {issue['line']} [{issue['source']}:{issue['rule_id']}] severity={issue['severity']}: {issue['message']}"
         for issue in static_issues
     )
 
@@ -240,7 +242,7 @@ def _validate_issues(raw_issues: list[dict]) -> list[dict]:
 
 def _chunk_issues(
     issues: list[dict],
-    chunk_size: int = 10,
+    chunk_size: int = 3,
 ) -> list[list[dict]]:
     """
     Splits a list of static analysis issues into smaller chunks.
@@ -271,7 +273,7 @@ def review_code_with_llm(
     static_issues: list[dict],
     patch: str,
     max_retries: int = 3,
-    chunk_size: int = 10,
+    chunk_size: int = 3,
 ) -> list[dict]:
     """
     Sends flagged code snippets to the LLM and returns structured review issues.
@@ -322,6 +324,7 @@ def review_code_with_llm(
 
                 if validated:
                     all_results.extend(validated)
+                    time.sleep(2)
                     break  # chunk succeeded — move to next chunk
 
                 # JSON valid but all objects failed schema — retry with feedback

@@ -190,7 +190,7 @@ if submit:
                 f"{BACKEND_URL}/review",
                 json={"pr_url": pr_url.strip()},
                 headers={"X-API-Key": APP_API_KEY},
-                timeout=60,  # LLM calls can take 10–20s on free tier
+                timeout=120,  # LLM calls can take 10–20s on free tier
             )
 
             # Handle non-2xx responses from the backend

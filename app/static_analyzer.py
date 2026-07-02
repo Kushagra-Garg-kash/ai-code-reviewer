@@ -71,7 +71,7 @@ def _write_temp_file(lines: list[tuple[int, str]]) -> tuple[str, int]:
     max_line = max(ln for ln, _ in lines)
 
     # Check if any line is indented — if so, we need a wrapper
-    needs_wrapper = any(content.startswith((" ", "\t")) for _, content in lines)
+    needs_wrapper = False  # Wrapper causes pylint to miss real issues — disabled
 
     # Build the file contents as a list indexed by line number
     file_lines: list[str] = [""] * max_line
@@ -147,15 +147,26 @@ def _run_pylint(filepath: str) -> list[dict[str, Any]]:
     """
     try:
         result = subprocess.run(
-            ["pylint", "--output-format=json", filepath],
+            ["pylint", "--output-format=json2",
+            "--disable=E0001,C0304",
+             filepath],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if not result.stdout.strip():
+
+        # pylint 4.x (json2 format) may write to stdout or stderr
+        # depending on whether issues were found — check both
+        output = result.stdout.strip() or result.stderr.strip()
+        if not output:
             return []
 
-        return json.loads(result.stdout)
+        data = json.loads(output)
+        
+        # json2 format wraps all messages inside a "messages" key
+        # unlike the old json format which returned a flat array
+        messages = data.get("messages", [])
+        return messages
 
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         return []
@@ -201,8 +212,14 @@ def _normalize_pylint(
     Converts pylint's raw output into the unified issue format.
     Filters out noise-only convention messages defined in PYLINT_IGNORED_SYMBOLS.
 
+    Updated for pylint 4.x json2 format — field names changed:
+        - "message-id" → "messageId"
+        - "type"       → "type" (unchanged)
+        - "symbol"     → "symbol" (unchanged)
+        - "line"       → "line" (unchanged)
+
     Args:
-        raw_results: The root list from pylint's JSON output.
+        raw_results: The messages list from pylint's json2 output.
         line_offset: Number of lines to subtract due to wrapper injection.
 
     Returns:
@@ -219,12 +236,16 @@ def _normalize_pylint(
 
         type_raw = issue.get("type", "convention")
         severity = PYLINT_SEVERITY_MAP.get(type_raw, "suggestion")
+        # Skip convention messages — too noisy for diff fragments
+        if type_raw == "convention":
+            continue
         reported_line = issue.get("line", 0)
 
         normalized.append({
             "line": max(1, reported_line - line_offset),
             "severity": severity,
-            "rule_id": issue.get("message-id", "UNKNOWN"),
+            # json2 uses "messageId" instead of "message-id"
+            "rule_id": issue.get("messageId", issue.get("message-id", "UNKNOWN")),
             "message": issue.get("message", ""),
             "source": "pylint",
         })
