@@ -2,7 +2,6 @@
 
 ![CI](https://github.com/Kushagra-Garg-kash/ai-code-reviewer/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 
 A hybrid static analysis + LLM-powered code review tool for GitHub pull requests. It runs deterministic security and quality checks first, then sends only the flagged code to an LLM for plain-English explanations and fix suggestions — keeping reviews fast, cheap, and consistent.
 
@@ -201,7 +200,3 @@ pytest
 - GitHub App with OAuth instead of personal access token
 
 ---
-
-## License
-
-MIT
