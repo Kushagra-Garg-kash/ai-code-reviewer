@@ -1,0 +1,36 @@
+# --- Secrets: never bake these into the image ---
+.env
+.env.example
+
+# --- Version control ---
+.git
+.gitignore
+
+# --- Python artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# --- Local databases / generated output ---
+# reviews.db is created at runtime inside the container; don't ship a stale local copy
+app/reviews.db
+bandit_output.json
+pylint_output.json
+sample_vulnerable.py
+
+# --- Testing / CI ---
+tests/
+.pytest_cache/
+.github/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- Docs not needed at runtime ---
+README.md
