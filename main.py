@@ -10,6 +10,7 @@ routing, request parsing, error mapping to HTTP status codes.
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from contextlib import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db, save_review, get_recent_reviews
 from app.llm_client import ask_llm, review_code_with_llm
 from app.models import AskRequest, AskResponse, HealthResponse, ReviewRequest, ReviewResponse, ReviewHistoryItem
@@ -38,6 +39,13 @@ app = FastAPI(
     docs_url="/docs",     
     redoc_url="/redoc", 
     lifespan=lifespan,   
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],       # TEMPORARY — will lock to Streamlit Cloud URL once known
+    allow_credentials=False,   # must be False when using "*" — browsers reject True + wildcard together
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],       # needed for X-API-Key header
 )
 
 app.state.limiter = limiter

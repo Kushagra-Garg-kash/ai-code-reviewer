@@ -24,7 +24,7 @@ from datetime import datetime, timezone, timedelta
 
 APP_API_KEY = os.getenv("APP_API_KEY")
 # Backend URL — switch to Render URL when deployed in Week 4
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "https://kushhhzz-ai-code-reviewer.hf.space")
 
 # ---------------------------------------------------------------------------
 # Severity badge helpers
