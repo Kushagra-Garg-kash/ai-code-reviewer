@@ -184,13 +184,13 @@ if submit:
         st.warning("Please enter a GitHub PR URL before submitting.")
         st.stop()
 
-    with st.spinner("Fetching PR diff and running analysis..."):
+    with st.spinner("Fetching PR diff and running analysis...Large prs can take few mins on free-tier hosting"):
         try:
             response = requests.post(
                 f"{BACKEND_URL}/review",
                 json={"pr_url": pr_url.strip()},
                 headers={"X-API-Key": APP_API_KEY},
-                timeout=120,  # LLM calls can take 10–20s on free tier
+                timeout=150,  # LLM calls can take 10–20s on free tier
             )
 
             # Handle non-2xx responses from the backend
