@@ -86,12 +86,12 @@ def issue_breakdown(issues: list[dict]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="AI Code Reviewer",
+    page_title="CodeRev AI",
     page_icon="🔍",
     layout="centered",
 )
 
-st.title(" AI-Powered Code Reviewer")
+st.title("CodeRev AI")
 st.caption(
     "Paste a GitHub Pull Request URL below. "
     "The tool runs static analysis + LLM reasoning and returns structured issues."
