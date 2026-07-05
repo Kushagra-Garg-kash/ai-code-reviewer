@@ -7,12 +7,16 @@ A hybrid static analysis + LLM-powered code review tool for GitHub pull requests
 
 ---
 
-## Demo
+## Live Demo
 
-🎥 **Demo video:** [Watch on Loom](https://www.loom.com/share/982833489f4b48e59c28304c63f81f9a)
+- 🚀 **Backend API:** [https://kushhhzz-ai-code-reviewer.hf.space](https://kushhhzz-ai-code-reviewer.hf.space)
+- 🖥️ **Frontend app:** [https://ai-code-reviewer-kash.streamlit.app](https://ai-code-reviewer-kash.streamlit.app)
+- 🎥 **Demo video:** [Watch on Loom](https://www.loom.com/share/982833489f4b48e59c28304c63f81f9a)
 
 ![App Screenshot](docs/screenshot_review.png)
 _Streamlit UI showing a completed review, grouped by severity._
+
+Try it yourself — paste a GitHub PR URL into the live frontend above. No local setup required.
 
 ---
 
@@ -38,6 +42,7 @@ The system follows a 5-layer pipeline:
 - **Token chunking** — large PRs are split into ~100-line chunks and merged
 - **Auth + rate limiting** — `X-API-Key` header required, 10 requests/min per IP
 - **Review history** — past reviews stored and browsable via SQLite
+- **Deployed end-to-end** — live FastAPI backend (Hugging Face Spaces, Docker) and Streamlit frontend (Streamlit Cloud), with CORS locked to the production frontend origin
 
 ---
 
@@ -52,7 +57,9 @@ The system follows a 5-layer pipeline:
 | Code Linter | Pylint | Configurable, JSON-output quality analysis |
 | Database | SQLite | Zero-config, sufficient at this scale |
 | Frontend | Streamlit | Fast UI without frontend JS |
-| Rate Limiting / Auth | slowapi + custom API key dependency | Per-IP throttling, simple key-based access control |
+| Rate Limiting / Auth | slowapi + custom API key dependency | Per-IP throttling, simple key-based access control (`X-API-Key` header, `allow_credentials=False`) |
+| Deployment — backend | Hugging Face Spaces (Docker) | Reliable free Docker hosting, port 7860, secrets via Repository Secrets UI |
+| Deployment — frontend | Streamlit Cloud | One-click deploy from GitHub, free tier |
 | Testing | pytest | 21 tests across client, analyzer, and LLM modules |
 | CI | GitHub Actions | Automated test run on every push |
 
@@ -131,11 +138,27 @@ uvicorn main:app --reload
 streamlit run frontend/streamlit_app.py
 ```
 
-### Docker _(coming in Week 4)_
+### Docker
+
+The backend runs in Docker in production (Hugging Face Spaces). To run it locally:
+
 ```bash
 docker build -t ai-code-reviewer .
-docker run -p 8000:8000 --env-file .env ai-code-reviewer
+docker run -p 7860:7860 --env-file .env ai-code-reviewer
 ```
+
+> Port **7860** is used (not the local dev default of 8000) to match Hugging Face Spaces' required container port for Docker-based Spaces.
+
+---
+
+## Deployment
+
+| Layer | Platform | Notes |
+|---|---|---|
+| Backend | [Hugging Face Spaces](https://kushhhzz-ai-code-reviewer.hf.space) | Docker Space, port 7860. Secrets (`GROQ_API_KEY`, `GITHUB_TOKEN`, `APP_API_KEY`) set via HF Repository Secrets UI, never committed. |
+| Frontend | [Streamlit Cloud](https://ai-code-reviewer-kash.streamlit.app) | Deployed directly from GitHub; backend URL set as a Streamlit secret. Request timeout set to 300s to accommodate large multi-file PRs. |
+
+CORS on the backend is restricted to the production Streamlit origin (`allow_credentials=False`, since auth is header-based rather than cookie-based).
 
 ---
 
